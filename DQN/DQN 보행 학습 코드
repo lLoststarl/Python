@@ -1,0 +1,185 @@
+from filterpy.kalman import UnscentedKalmanFilter as UKF
+from filterpy.common import Q_discrete_white_noise
+import board
+import busio
+from adafruit_ads1x15.analog_in import AnalogIn
+import adafruit_ads1x15.ads1115 as ADS
+import random
+from keras.models import Sequential
+from keras.layers import Dense, Dropout
+from keras.optimizers import Adam
+import numpy as np
+import random
+import tensorflow as tf
+from collections import deque
+DIMENSION = 2  # 가정: 3차원 데이터. 실제 차원에 맞게 조절 필요
+
+def initialize_ukf():
+    ukf = UKF(dim_x=DIMENSION, dim_z=DIMENSION)
+    ukf.x = np.zeros(DIMENSION)
+    ukf.P *= 10
+    ukf.R = np.eye(DIMENSION)
+    ukf.Q = Q_discrete_white_noise(dim=DIMENSION, dt=1, var=0.1)
+    return ukf
+
+ukf = initialize_ukf()
+
+def correct_data_with_ukf(sensor_data):
+    ukf.predict()
+    ukf.update(sensor_data)
+    return ukf.x
+
+
+
+# I2C 설정
+i2c = busio.I2C(board.SCL, board.SDA)
+
+# ADC 초기화
+ads = ADS.ADS1115(i2c)
+chan = AnalogIn(ads, ADS.P0)  # P0 핀에서 데이터 읽기. 다른 핀을 사용하려면 이 부분을 변경해야 함.
+
+def read_sensor_data():
+    return chan.value
+
+STATE_SIZE = 3  # SEN0240 센서 데이터 차원
+ACTION_SIZE = 4  # 예: [걷기, 뛰기, 왼쪽, 오른쪽]
+BATCH_SIZE = 32 #학습 사이즈
+GAMMA = 0.95
+EPSILON = 1.0  #엡실론 greedy
+EPSILON_DECAY = 0.995
+EPSILON_MIN = 0.01
+LEARNING_RATE = 0.001 # 학습률
+MEMORY_SIZE = 10000
+
+class trajectory:
+    @staticmethod
+    def cycloid_trajectory(t, a=1, b=1):
+        x = a * t - b * np.sin(t)
+        y = a - b * np.cos(t)
+        return x, y
+
+    @staticmethod
+    def elliptical_trajectory(t, a=1, b=1):
+        x = a * np.cos(t)
+        y = b * np.sin(t)
+        return x, y
+
+class DQNAgent:
+    def __init__(self):
+        self.memory = deque(maxlen=MEMORY_SIZE)
+        self.epsilon = EPSILON
+
+        self.model = self._build_model()
+
+    def _build_model(self):
+        model = tf.keras.Sequential()
+        model.add(tf.keras.layers.Dense(32, input_dim=STATE_SIZE, activation='relu'))
+        model.add(tf.keras.layers.Dense(32, activation='relu'))
+        model.add(tf.keras.layers.Dense(ACTION_SIZE, activation='linear'))
+        model.compile(loss='mse', optimizer=tf.keras.optimizers.Adam(lr=LEARNING_RATE))
+        return model
+
+    def remember(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
+
+    def act(self, state):
+        if np.random.rand() <= self.epsilon:
+            return random.randrange(ACTION_SIZE)
+        q_values = self.model.predict(state)
+        return np.argmax(q_values[0])
+
+    def replay(self, batch_size):
+        minibatch = random.sample(self.memory, batch_size)
+        for state, action, reward, next_state, done in minibatch:
+            target = reward
+            if not done:
+                target += GAMMA * np.amax(self.model.predict(next_state)[0])
+            target_f = self.model.predict(state)
+            target_f[0][action] = target
+            self.model.train_on_batch(state, target_f)
+        if self.epsilon > EPSILON_MIN:
+            self.epsilon *= EPSILON_DECAY
+
+
+
+class RobotEnvironment:
+    def __init__(self):
+        pass  # 여기에서 로봇과의 통신 및 초기화 코드가 들어가야하는데 다이나믹셀 모터 위자드 사용 위치 파악 하는 코드
+
+    def get_robot_position(self):
+        # 여기에서는 다이나믹셀 모터 위자드 사용 위치 파악 하는 코드
+        return [0, 0]
+
+    def calculate_motor_angles(self, x, y):
+        left_motor_angle = int(1024 * (x + 1) / 2)  # x값을 0 ~ 1024 범위로 변환
+        right_motor_angle = int(1024 * (y + 1) / 2)  # y값을 0 ~ 1024 범위로 변환
+
+        return left_motor_angle, right_motor_angle
+
+    def move_along_trajectory(self, trajectory_func):
+        for i in np.linspace(0, 2 * np.pi, 100):
+            x, y = trajectory_func(i)
+            left_motor_angle, right_motor_angle = self.calculate_motor_angles(x, y)
+
+            self.set_motor_position(DXL_ID_LEFT, left_motor_angle)  # 왼쪽 모터 설정
+            self.set_motor_position(DXL_ID_RIGHT, right_motor_angle)  # 오른쪽 모터 설정
+
+
+            if i < np.pi:
+                print("Swing Phase")
+            else:
+                print("Stance Phase")
+
+
+
+    def set_motor_position(self, motor_id, position):
+        dxl_comm_result, dxl_error = self.packetHandler.write2ByteTxRx(self.portHandler, motor_id,ADDR_MX_GOAL_POSITION, position)
+        if dxl_comm_result != COMM_SUCCESS:
+            print(f"Error occurred while setting position: {self.packetHandler.getTxRxResult(dxl_comm_result)}")
+        elif dxl_error != 0:
+            print(f"Error occurred while setting position: {self.packetHandler.getRxPacketError(dxl_error)}")
+
+    def get_reward_and_done(self, action):
+        reward = 0
+        done = False
+
+        if action == 0:  # 사이클로이드로 걷기
+            self.move_along_trajectory(cycloid_trajectory)
+        elif action == 1:  # 타원궤적으로 걷기
+            self.move_along_trajectory(elliptical_trajectory)
+
+        current_position = self.get_robot_position()
+        desired_position = cycloid_trajectory(current_position[0]) if action == 0 else elliptical_trajectory(current_position[0])
+
+        # 원하는 궤적과의 거리를 계산 (간단한 유클리드 거리로 계산)
+        distance = np.linalg.norm(np.array(current_position) - np.array(desired_position))
+
+        # 원하는 궤적과의 거리에 따라 보상 결정
+        if distance < 0.1:  # 0.1은 임의의 값
+            reward = 1.0
+        else:
+            reward = -distance  # 원하는 궤적에서 멀어질수록 보상 감소
+
+        # 원하는 궤적에서 너무 멀리 떨어진 경우
+        if distance > 2.0:  # 2.0은 임의의 값
+            done = True
+
+        return reward, done
+
+agent = DQNAgent()
+for episode in range(1000):  # 예시로 1000 에피소드
+    state = np.reshape(read_sensor_data(), [1, STATE_SIZE])
+    state = correct_data_with_ukf(state)
+    for t in range(500):  # 예시로 각 에피소드는 최대 500 타임스텝
+        action = agent.act(state)
+        next_state = np.reshape(read_sensor_data(), [1, STATE_SIZE])
+        next_state = correct_data_with_ukf(next_state)
+        reward, done = get_reward_and_done(action)
+        agent.remember(state, action, reward, next_state, done)
+        state = next_state
+        if done:
+            break
+    if len(agent.memory) > BATCH_SIZE:
+        agent.replay(BATCH_SIZE)
+
+        RUNNING_COUNT_THRESHOLD = 5  # 예시 임계값
