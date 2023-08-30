@@ -1,0 +1,107 @@
+from dynamixel_sdk import *  
+import pygame
+import sys
+import os
+
+# Dynamixel 설정
+DEVICENAME = '/dev/ttyUSB0'
+BAUDRATE = 57600
+DXL_ID = 3
+ADDR_GOAL_POSITION = 116  # Dynamixel의 goal position 주소
+DXL_MINIMUM_POSITION_VALUE = 500  # 최소 각도
+DXL_MAXIMUM_POSITION_VALUE = 1000  # 최대 각도
+
+# Dynamixel 포트 초기화
+portHandler = PortHandler(DEVICENAME)
+packetHandler = PacketHandler(2.0)  # Protocol version
+
+if not portHandler.openPort():
+
+    print("Failed to open the port!")
+    sys.exit()
+
+if not portHandler.setBaudRate(BAUDRATE):
+    print("Failed to set the baud rate!")
+    sys.exit()
+
+
+pygame.init()
+
+
+screen_size = (800, 480)
+screen = pygame.display.set_mode(screen_size)
+WHITE = (255, 255, 255)
+
+button_size = (100, 100)
+up_button = pygame.Rect(350, 30, *button_size)
+down_button = pygame.Rect(350, 225, *button_size)
+left_button = pygame.Rect(200, 125, *button_size)
+right_button = pygame.Rect(500, 125, *button_size)
+font = pygame.font.Font(None, 48)
+up_text = font.render("UP", True, (0, 0, 0))
+down_text = font.render("DOWN", True, (0, 0, 0))
+left_text = font.render("LEFT", True, (0, 0, 0))
+right_text = font.render("RIGHT", True, (0, 0, 0))
+
+current_goal = DXL_MINIMUM_POSITION_VALUE
+
+def move_dynamixel(goal_position):
+    dxl_comm_result, dxl_error = packetHandler.write4ByteTxRx(portHandler, DXL_ID, ADDR_GOAL_POSITION, goal_position)
+    if dxl_comm_result != COMM_SUCCESS:
+        print("%s" % packetHandler.getTxRxResult(dxl_comm_result))
+    elif dxl_error != 0:
+        print("%s" % packetHandler.getRxPacketError(dxl_error))
+
+def process_button_press(pos):
+    global current_goal
+
+    if up_button.collidepoint(pos):
+        print("Up Button Pressed")
+        current_goal += 100
+        if current_goal > DXL_MAXIMUM_POSITION_VALUE:
+            current_goal = DXL_MAXIMUM_POSITION_VALUE
+        move_dynamixel(current_goal)
+
+    elif down_button.collidepoint(pos):
+        print("Down Button Pressed")
+        current_goal -= 100
+        if current_goal < DXL_MINIMUM_POSITION_VALUE:
+            current_goal = DXL_MINIMUM_POSITION_VALUE
+        move_dynamixel(current_goal)
+
+    elif left_button.collidepoint(pos):
+        print("Left Button Pressed")
+        current_goal -= 75
+        if current_goal < DXL_MINIMUM_POSITION_VALUE:
+            current_goal = DXL_MINIMUM_POSITION_VALUE
+        move_dynamixel(current_goal)
+
+    elif right_button.collidepoint(pos):
+        print("Right Button Pressed")
+        current_goal += 75
+        if current_goal > DXL_MAXIMUM_POSITION_VALUE:
+            current_goal = DXL_MAXIMUM_POSITION_VALUE
+        move_dynamixel(current_goal)
+        
+packetHandler.write1ByteTxRx(portHandler, DXL_ID, 64, 1)
+
+while True:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            portHandler.closePort()
+            sys.exit()
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            process_button_press(pygame.mouse.get_pos())
+
+    screen.fill(WHITE)
+    pygame.draw.rect(screen, WHITE, up_button, 2)
+    pygame.draw.rect(screen, WHITE, down_button, 2)
+    pygame.draw.rect(screen, WHITE, left_button, 2)
+    pygame.draw.rect(screen, WHITE , right_button, 2)
+    screen.blit(up_text, (up_button.centerx - up_text.get_width() // 2, up_button.centery - up_text.get_height() // 2))
+    screen.blit(down_text, (down_button.centerx - down_text.get_width() // 2, down_button.centery - down_text.get_height() // 2))
+    screen.blit(left_text, (left_button.centerx - left_text.get_width() // 2, left_button.centery - left_text.get_height() // 2))
+    screen.blit(right_text, (right_button.centerx - right_text.get_width() // 2, right_button.centery - right_text.get_height() // 2))
+
+    pygame.display.update()
